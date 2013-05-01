@@ -508,7 +508,11 @@ DecodeOpcodes(const std::vector<uint8_t> &Opcodes) {
       Decode_01aaaaaa(AsmOS, Op);
     } else if (Op == 0x80u) {
       FETCH_NEXT_BYTE();
-      Decode_10000000_00000000(AsmOS, Op);
+      if ((Op & 0xffu) == 0x00u) {
+        Decode_10000000_00000000(AsmOS, Op);
+      } else {
+        Decode_1000aaaa_bbbbbbbb(AsmOS, Op);
+      }
     } else if ((Op & 0xf0u) == 0x80u) {
       FETCH_NEXT_BYTE();
       Decode_1000aaaa_bbbbbbbb(AsmOS, Op);
