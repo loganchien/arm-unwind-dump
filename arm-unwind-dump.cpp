@@ -13,6 +13,8 @@
 
 #include <llvm/ADT/OwningPtr.h>
 #include <llvm/Object/ELF.h>
+#include <llvm/Object/ELFObjectFile.h>
+#include <llvm/Object/ELFTypes.h>
 #include <llvm/Object/ObjectFile.h>
 #include <llvm/Support/CommandLine.h>
 #include <llvm/Support/Endian.h>
@@ -81,6 +83,7 @@ void DumpHex(formatted_raw_ostream &OS, const std::vector<uint8_t> &Data) {
 
 typedef ELFType<support::little, 4, false> ARM_ELFType;
 typedef ELFObjectFile<ARM_ELFType>         ARM_ELFObjectFile;
+typedef ELFFile<ARM_ELFType>               ARM_ELFFile;
 typedef Elf_Shdr_Impl<ARM_ELFType>         ARM_ELF_Shdr;
 typedef Elf_Sym_Impl<ARM_ELFType>          ARM_ELF_Sym;
 typedef Elf_Dyn_Impl<ARM_ELFType>          ARM_ELF_Dyn;
@@ -108,6 +111,18 @@ private:
   relocation_iterator getRelocation(section_iterator Section,
                                     uint64_t Offset,
                                     uint64_t Type);
+
+
+  const ARM_ELF_Shdr *getELFSectionHeader(section_iterator Section) {
+    DataRefImpl DRI = Section->getRawDataRefImpl();
+    return reinterpret_cast<const ARM_ELF_Shdr *>(DRI.p);
+  }
+
+  int64_t getELFRelocationAddend(relocation_iterator Reloc) {
+    int64_t Addend = 0;
+    Ensure(ObjFile.getRelocationAddend(Reloc->getRawDataRefImpl(), Addend));
+    return Addend;
+  }
 
   void DumpSections();
   void DumpSection(section_iterator Section);
@@ -255,8 +270,25 @@ getSymbol(section_iterator Section, uint64_t Offset, SymbolRef::Type Ty) {
 relocation_iterator ARMUnwindOpcodesDisassembler::
 getRelocation(section_iterator Section, uint64_t Offset, uint64_t Type) {
   error_code EC;
-  for (relocation_iterator RI = Section->begin_relocations(),
-       RE = Section->end_relocations(); RI != RE; RI.increment(EC)) {
+
+  // Find the relocation section
+  section_iterator RelSec = ObjFile.begin_sections();
+  section_iterator SE = ObjFile.end_sections();
+  while (RelSec != SE) {
+    Ensure(EC);
+    if (RelSec->getRelocatedSection() == Section) {
+      break;
+    }
+    RelSec.increment(EC);
+  }
+
+  if (RelSec == SE) {
+    return Section->end_relocations();
+  }
+
+  // Look for the relocation at the offset with same type
+  for (relocation_iterator RI = RelSec->begin_relocations(),
+       RE = RelSec->end_relocations(); RI != RE; RI.increment(EC)) {
     Ensure(EC);
 
     uint64_t RIOffset, RIType;
@@ -267,6 +299,7 @@ getRelocation(section_iterator Section, uint64_t Offset, uint64_t Type) {
       return RI;
     }
   }
+
   return Section->end_relocations();
 }
 
@@ -276,10 +309,9 @@ void ARMUnwindOpcodesDisassembler::Dump() {
 
 void ARMUnwindOpcodesDisassembler::DumpSections() {
   error_code EC;
-  if (ObjFile.getNumSections() > 0) {
-    section_iterator SI = ObjFile.begin_sections();
-    section_iterator SE = ObjFile.end_sections();
-
+  section_iterator SI = ObjFile.begin_sections();
+  section_iterator SE = ObjFile.end_sections();
+  if (SI != SE) {
     DumpSection(SI);
     SI.increment(EC);
     Ensure(EC);
@@ -299,7 +331,8 @@ void ARMUnwindOpcodesDisassembler::DumpSection(section_iterator Section) {
   OS << "- section: " << Name << "\n";
 
   // Dump section flags and linked section
-  const ARM_ELF_Shdr *Shdr = ObjFile.getElfSection(Section);
+  DataRefImpl DRI = Section->getRawDataRefImpl();
+  const ARM_ELF_Shdr *Shdr = reinterpret_cast<const ARM_ELF_Shdr *>(DRI.p);
   uint32_t sh_flags = Shdr->sh_flags;
   uint32_t sh_link = Shdr->sh_link;
 
@@ -349,17 +382,15 @@ void ARMUnwindOpcodesDisassembler::DumpExIdxEntry(section_iterator Section,
     OS << "  - function: <unknown>+0x" << format("%"PRIx32, Data[0]) << "\n";
   } else {
     // Get the referee symbol
-    SymbolRef Sym;
-    int64_t Addend;
-    Ensure(FuncReloc->getSymbol(Sym));
-    Ensure(FuncReloc->getAdditionalInfo(Addend));
+    symbol_iterator Sym = FuncReloc->getSymbol();
+    int64_t Addend = getELFRelocationAddend(FuncReloc);
     Addend += static_cast<int32_t>(Data[0]);
 
     // Get the symbol offset to the section containing the symbol
     section_iterator SymSection(ObjFile.end_sections());
     uint64_t SymOffset;
-    Ensure(Sym.getSection(SymSection));
-    Ensure(Sym.getValue(SymOffset));
+    Ensure(Sym->getSection(SymSection));
+    Ensure(Sym->getValue(SymOffset));
 
     // Backward search for the function symbol
     symbol_iterator FuncSym(getSymbol(SymSection, SymOffset + Addend,
@@ -370,7 +401,7 @@ void ARMUnwindOpcodesDisassembler::DumpExIdxEntry(section_iterator Section,
       Ensure(FuncSym->getName(Name));
       OS << Name;
     } else {
-      Ensure(Sym.getName(Name));
+      Ensure(Sym->getName(Name));
       OS << Name;
       if (Addend > 0) {
         OS << "+0x" << format("%"PRIx32, static_cast<int32_t>(Addend));
@@ -402,17 +433,15 @@ void ARMUnwindOpcodesDisassembler::DumpExIdxEntry(section_iterator Section,
     }
   } else {
     // Get the referee symbol
-    SymbolRef Sym;
-    int64_t Addend;
-    Ensure(DataReloc->getSymbol(Sym));
-    Ensure(DataReloc->getAdditionalInfo(Addend));
+    symbol_iterator Sym = DataReloc->getSymbol();
+    int64_t Addend = getELFRelocationAddend(DataReloc);
     Addend += static_cast<int32_t>(Data[1]);
 
     // Get the symbol offset to the section containing the symbol
     section_iterator SymSection(ObjFile.end_sections());
     uint64_t SymOffset;
-    Ensure(Sym.getSection(SymSection));
-    Ensure(Sym.getValue(SymOffset));
+    Ensure(Sym->getSection(SymSection));
+    Ensure(Sym->getValue(SymOffset));
 
     // Get the contents of the section
     StringRef Contents;
@@ -451,9 +480,8 @@ void ARMUnwindOpcodesDisassembler::DumpExIdxEntry(section_iterator Section,
       if (PersonalityReloc == SymSection->end_relocations()) {
         Personality = "<< no relocation for personality >>";
       } else {
-        SymbolRef PersonalitySym;
-        Ensure(PersonalityReloc->getSymbol(PersonalitySym));
-        PersonalitySym.getName(Personality);
+        symbol_iterator PersonalitySym = PersonalityReloc->getSymbol();
+        PersonalitySym->getName(Personality);
       }
 
       Opcodes.push_back((Data[1] >> 16) & 0xff);
