@@ -304,8 +304,10 @@ void ARMUnwindOpcodesDisassembler::DumpSection(section_iterator Section) {
   uint32_t sh_link = Shdr->sh_link;
 
   OS << "  flag: " << format("%08"PRIx32, sh_flags) << "\n";
-  OS << "  link: " << format("%08"PRIx32, sh_link);
-  if (sh_link != 0) {
+  OS << "  link: ";
+  if (sh_link == 0) {
+    OS << " None";
+  } else {
     section_iterator LinkSec(getSection(sh_link));
     StringRef LinkSecName;
     Ensure(LinkSec->getName(LinkSecName));
