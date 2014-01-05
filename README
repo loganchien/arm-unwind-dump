@@ -1,0 +1,18 @@
+ARM Unwind Opcode Dump
+======================
+
+This is a command line tool to dump the ARM unwind opcodes for stack unwinding
+during the zero-cost exception handling.  This tool can read the ARM object
+file, and print the unwind instructions in YAML format.
+
+Installation
+------------
+
+First, you have to make sure that you have a latest LLVM installation, and
+make sure that `llvm-config` command is in your `$PATH`.
+
+Second, please run `make` to build the command:
+
+    $ make
+
+Now, you can run `arm-unwind-dump` to disassemble every ARM object file.
